@@ -281,5 +281,5 @@ Resources:
       Name: !Join ['-', [!Ref Stage , 'TargetGroup']]
       Port: 80
       Protocol: HTTP
-      TargetType: ip
+      UnhealthyThresholdCount: 2
       VpcId: !Ref VPC
