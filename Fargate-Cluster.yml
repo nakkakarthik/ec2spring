@@ -8,6 +8,10 @@ Parameters:
     Type: Number
   ImageURI:
     Type: String
+  ServiceName:
+    Type: String
+    Default: nginx
+    Description: A name for the service
   InstanceType:
     Description: EC2 instance type
     Type: String
@@ -117,6 +121,34 @@ Resources:
             Action: 'sts:AssumeRole'
       ManagedPolicyArns:
         - 'arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy'
+  # Create a ECSServiceAutoScalingRole with container details	
+  AutoScalingRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Join ['-', [!Ref Stage , 'AutoScalingRole']]
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          Action:
+            - "sts:AssumeRole"
+          Effect: Allow
+          Principal:
+            Service:
+              - application-autoscaling.amazonaws.com
+      Path: /
+      Policies:
+        - PolicyName: ecs-service-autoscaling
+          PolicyDocument:
+            Statement:
+              Effect: Allow
+              Action:
+                - application-autoscaling:*
+                - cloudwatch:DescribeAlarms
+                - cloudwatch:PutMetricAlarm
+                - ecs:DescribeServices
+                - ecs:UpdateService
+              Resource: "*"
+
 
   # Create a TaskDefinition with container details
   TaskDefinition:
@@ -174,16 +206,6 @@ Resources:
         - !Ref SubnetB
       Type: application
 
-  # Create a TargetGroup for HTTP port 80
-  TargetGroup:
-    Type: AWS::ElasticLoadBalancingV2::TargetGroup
-    Properties:
-      Name: !Join ['-', [!Ref Stage , 'TargetGroup']]
-      Port: 80
-      Protocol: HTTP
-      TargetType: ip
-      VpcId: !Ref VPC
-
   # Create a LoadBalancerListener and attach the TargetGroup and LoadBalancer
   LoadBalancerListener:
     Type: AWS::ElasticLoadBalancingV2::Listener
@@ -196,23 +218,69 @@ Resources:
       Protocol: HTTP
 
   # Create an ECS Service and add created Cluster, TaskDefintion, Subnets, TargetGroup and SecurityGroup
-  ECSService:
+  Service:
     Type: AWS::ECS::Service
     DependsOn: LoadBalancerListener
     Properties:
-      ServiceName: !Join ['-', [!Ref Stage , 'ECSService']]
+      ServiceName: !Join ['-', [!Ref Stage , 'Service']]
       Cluster: !Ref Cluster
-      TaskDefinition: !Ref TaskDefinition
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 75
       DesiredCount: 2
-      NetworkConfiguration: 
-        AwsvpcConfiguration:
-          AssignPublicIp: DISABLED
-          Subnets:
-            - !Ref SubnetA
-            - !Ref SubnetB
-          SecurityGroups:
-            - !Ref ContainerSecurityGroup
+      TaskDefinition: !Ref 'TaskDefinition'
       LoadBalancers:
         - ContainerName: !Join ['-', [!Ref Stage , 'Container']]
           ContainerPort: !Ref ContainerPort
           TargetGroupArn: !Ref TargetGroup
+   
+  # Autoscaling group   
+  ECSAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier:
+        - !Ref SubnetA
+        - !Ref SubnetB
+      LaunchConfigurationName: !Ref 'ContainerInstances'
+      MinSize: '1'
+      MaxSize: '3'
+      DesiredCapacity: !Ref 'DesiredCapacity'
+    CreationPolicy:
+      ResourceSignal:
+        Timeout: PT15M
+    UpdatePolicy:
+      AutoScalingReplacingUpdate:
+        WillReplace: 'true'
+  ContainerInstances:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      ImageId: !Ref 'ECSAMI'
+      SecurityGroups: [!Ref 'ContainerSecurityGroup']
+      InstanceType: !Ref 'InstanceType'
+      IamInstanceProfile: !Ref 'EC2InstanceProfile'
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -xe
+          echo ECS_CLUSTER= !Ref cluster >> /etc/ecs/ecs.config
+          yum install -y aws-cfn-bootstrap
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles: [ 'ecsInstanceRole' ]
+          
+ 
+  # Create a TargetGroup for HTTP port 80
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 6
+      HealthCheckPath: /
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      Name: !Join ['-', [!Ref Stage , 'TargetGroup']]
+      Port: 80
+      Protocol: HTTP
+      TargetType: ip
+      VpcId: !Ref VPC
