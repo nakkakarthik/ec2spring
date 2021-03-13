@@ -156,7 +156,6 @@ Resources:
     Properties: 
       Memory: 1024
       Cpu: 512
-      NetworkMode: awsvpc
       RequiresCompatibilities:
         - 'EC2'
       TaskRoleArn: !Ref ExecutionRole
